@@ -149,32 +149,35 @@ class BaseModel(object, metaclass=ABCMeta):
         }
 
     def _finetune(self, *Xs, Y=None, batch_size=None):
-        train_x, train_mask = self._text_to_ids(*Xs)
-        return self._training_loop(train_x, train_mask, Y, batch_size)
 
-    def _training_loop(self, train_x, train_mask, Y, batch_size=None):
-        batch_size = batch_size or self.config.batch_size
         self.label_encoder = self._get_target_encoder()
+        if Y is not None:
+            Y = self.label_encoder.fit_transform(Y)
+        else:
+            # only language model will be trained, mock fake target
+            Y = [[None]] * len(Xs[0])
+
+        train_xs, test_xs, train_y, test_y = train_test_split(list(zip(*Xs)), Y, test_size=self.config.val_size,
+                                                              random_state=self.config.seed)
+        train_xs = list(zip(*train_xs))
+        test_xs = list(zip(*test_xs))
+
+        train_x, train_mask = self._text_to_ids(*train_xs)
+        test_x, test_mask = self._text_to_ids(*test_xs)
+
+        return self._training_loop(train_x, train_mask, train_y, test_x, test_mask, test_y, batch_size)
+
+    def _training_loop(self, train_x, train_mask, train_y, val_x, val_mask, val_y, batch_size=None):
+
+        batch_size = batch_size or self.config.batch_size
+
         n_batch_train = batch_size * max(len(get_available_gpus(self.config)), 1)
         n_examples = train_x.shape[0]
         n_updates_total = (n_examples // n_batch_train) * self.config.n_epochs
 
-        if Y is not None:
-            Y = self.label_encoder.fit_transform(Y)
-            target_dim = len(self.label_encoder.target_dim)
-        else:
-            # only language model will be trained, mock fake target
-            Y = [[None]] * n_examples
-            target_dim = None
-
-        self._build_model(n_updates_total=n_updates_total, target_dim=target_dim)
-
-        dataset = (train_x, train_mask, Y)
-
-        x_tr, x_va, m_tr, m_va, y_tr, y_va = train_test_split(*dataset, test_size=self.config.val_size,
-                                                              random_state=self.config.seed)
-        dataset = (x_tr, m_tr, y_tr)
-        val_dataset = (x_va, m_va, y_va)
+        self._build_model(n_updates_total=n_updates_total, target_dim=len(self.label_encoder.target_dim))
+        dataset = (train_x, train_mask, train_y)
+        val_dataset = (val_x, val_mask, val_y)
 
         self.is_trained = True
         avg_train_loss = 0
