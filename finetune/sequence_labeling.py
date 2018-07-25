@@ -1,6 +1,7 @@
 from finetune.base import BaseModel, SEQUENCE_LABELING
 from finetune.target_encoders import SequenceLabelingEncoder
 from finetune.utils import indico_to_finetune_sequence, finetune_to_indico_sequence
+from sklearn.model_selection import train_test_split
 
 
 class SequenceLabeler(BaseModel):
@@ -18,9 +19,18 @@ class SequenceLabeler(BaseModel):
         val_size: Float fraction or int number that represents the size of the validation set.
         val_interval: The interval for which validation is performed, measured in number of steps.
         """
-        train_x, train_mask, sequence_labels, _ = self._text_to_ids_with_labels(X, Y)
-        return self._training_loop(train_x, train_mask, sequence_labels,
-                                   batch_size=batch_size or self.config.batch_size)
+        self.label_encoder = self._get_target_encoder()
+        train_x, test_x, train_y, test_y = train_test_split(X, Y, test_size=self.config.val_size,
+                                                                  random_state=self.config.seed)
+
+        train_x, train_mask, train_y, _ = self._text_to_ids_with_labels(train_x, Y=train_y)
+        test_x, test_mask, test_y, _ = self._text_to_ids_with_labels(test_x, Y=test_y)
+
+        train_y = self.label_encoder.fit_transform(train_y)
+        test_y = self.label_encoder.transform(test_y)
+
+        return self._training_loop(train_x=train_x, train_mask=train_mask, train_y=train_y, val_x=test_x,
+                            val_mask=test_mask, val_y=test_y, batch_size=batch_size)
 
     def _get_target_encoder(self):
         return SequenceLabelingEncoder()
