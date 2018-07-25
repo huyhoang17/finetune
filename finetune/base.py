@@ -24,7 +24,7 @@ from finetune.network_modules import featurizer, language_model, classifier, reg
 from finetune.utils import (
     find_trainable_variables, get_available_gpus, assign_to_gpu, average_grads,
     iter_data, soft_split, sequence_decode, concat_or_stack,
-    guarantee_initialized_variables, sample_with_temperature
+    guarantee_initialized_variables, sample_with_temperature, list_transpose
 )
 from finetune.errors import InvalidTargetType
 from finetune.config import PAD_TOKEN, get_default_config
@@ -93,7 +93,7 @@ class BaseModel(object, metaclass=ABCMeta):
         seq_array = self._array_format(token_idxs)
         return seq_array.token_ids, seq_array.mask
 
-    def _target_model(self, featurizer_state, targets, n_outputs, train=False, reuse=None, **kwargs):
+    def _target_model(self, *, featurizer_state, targets, n_outputs, train=False, reuse=None, **kwargs):
         # Conditionally constructs the default model for each of the main ways in which finetune can be used.
         # Can be overridden to use a different target model.
         if self.target_type == CLASSIFICATION:
@@ -157,17 +157,19 @@ class BaseModel(object, metaclass=ABCMeta):
             # only language model will be trained, mock fake target
             Y = [[None]] * len(Xs[0])
 
-        train_xs, test_xs, train_y, test_y = train_test_split(list(zip(*Xs)), Y, test_size=self.config.val_size,
-                                                              random_state=self.config.seed)
-        train_xs = list(zip(*train_xs))
-        test_xs = list(zip(*test_xs))
+        Xs_t = list_transpose(Xs)  # make the data batch dim first.
+        train_xs_t, test_xs_t, train_y, test_y = train_test_split(Xs_t, Y, test_size=self.config.val_size,
+                                                                  random_state=self.config.seed)
+        train_xs = list_transpose(train_xs_t)  # back to sequence dim first
+        test_xs = list_transpose(test_xs_t)
 
         train_x, train_mask = self._text_to_ids(*train_xs)
         test_x, test_mask = self._text_to_ids(*test_xs)
 
-        return self._training_loop(train_x, train_mask, train_y, test_x, test_mask, test_y, batch_size)
+        return self._training_loop(train_x=train_x, train_mask=train_mask, train_y=train_y, val_x=test_x,
+                                   val_mask=test_mask, val_y=test_y, batch_size=batch_size)
 
-    def _training_loop(self, train_x, train_mask, train_y, val_x, val_mask, val_y, batch_size=None):
+    def _training_loop(self, *, train_x, train_mask, train_y, val_x, val_mask, val_y, batch_size=None):
 
         batch_size = batch_size or self.config.batch_size
 
@@ -175,7 +177,7 @@ class BaseModel(object, metaclass=ABCMeta):
         n_examples = train_x.shape[0]
         n_updates_total = (n_examples // n_batch_train) * self.config.n_epochs
 
-        self._build_model(n_updates_total=n_updates_total, target_dim=len(self.label_encoder.target_dim))
+        self._build_model(n_updates_total=n_updates_total, target_dim=self.label_encoder.target_dim)
         dataset = (train_x, train_mask, train_y)
         val_dataset = (val_x, val_mask, val_y)
 
@@ -205,7 +207,8 @@ class BaseModel(object, metaclass=ABCMeta):
                         self.train_writer.add_summary(outputs.get(self.summaries), global_step)
 
                     sum_val_loss = 0
-                    for xval, mval, yval in iter_data(*val_dataset, n_batch=n_batch_train, verbose=self.config.verbose, tqdm_desc="Validation"):
+                    for xval, mval, yval in iter_data(*val_dataset, n_batch=n_batch_train, verbose=self.config.verbose,
+                                                      tqdm_desc="Validation"):
                         outputs = self._eval(
                             self.clf_loss,
                             self.summaries,
@@ -234,16 +237,16 @@ class BaseModel(object, metaclass=ABCMeta):
                             self.save(self.config.autosave_path)
 
                 outputs = self._eval(
-                    self.clf_loss, 
+                    self.clf_loss,
                     self.train_op,
                     feed_dict={
-                      self.X: xmb,
-                      self.M: mmb,
-                      self.Y: ymb,
-                      self.do_dropout: DROPOUT_ON
+                        self.X: xmb,
+                        self.M: mmb,
+                        self.Y: ymb,
+                        self.do_dropout: DROPOUT_ON
                     }
                 )
-                  
+
                 cost = outputs.get(self.clf_loss, 0)
                 avg_train_loss = avg_train_loss * self.config.rolling_avg_decay + cost * (
                         1 - self.config.rolling_avg_decay)
@@ -295,7 +298,7 @@ class BaseModel(object, metaclass=ABCMeta):
                     }
                 )
                 probas = output.get(self.predict_proba_op)
-                classes = self.label_encoder.target_dim
+                classes = self.label_encoder.target_labels
                 predictions.extend([
                     dict(zip(classes, proba)) for proba in probas
                 ])
@@ -392,7 +395,6 @@ class BaseModel(object, metaclass=ABCMeta):
         self.target_dim = target_dim
         self._define_placeholders()
 
-
         aggregator = defaultdict(list)
         train_loss_tower = 0
         gpus = get_available_gpus(self.config)
@@ -479,7 +481,6 @@ class BaseModel(object, metaclass=ABCMeta):
             self.summaries.append(tf.summary.scalar('LanguageModelLoss', self.lm_loss))
             self.summaries.append(tf.summary.scalar('TotalLoss', train_loss_tower / n_splits))
             self.summaries = tf.summary.merge(self.summaries)
-
 
     def _build_model(self, n_updates_total, target_dim, train=True):
         """
