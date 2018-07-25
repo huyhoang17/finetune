@@ -93,6 +93,12 @@ class SequenceLabeler(BaseModel):
             result.append(list(zip(token_seq, proba_seq)))
         return result
 
+    def _format_for_encoding(self, *Xs):
+        """
+        No op -- the default input format is the same format used by SequenceLabeler
+        """
+        return Xs
+
     def _target_placeholder(self):
         return tf.placeholder(tf.int32, [None, self.config.max_length])  # classification targets
 

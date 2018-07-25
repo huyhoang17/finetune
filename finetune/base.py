@@ -80,9 +80,22 @@ class BaseModel(object, metaclass=ABCMeta):
         self.is_built = False  # has tf graph been constructed?
         self.is_trained = False  # has model been fine-tuned?
 
+    def _format_for_encoding(self, *Xs):
+        """
+        Most subclasses take in inputs as:
+            List (batch) of list (docs)
+        
+        Encode_multi_input expect the following format:
+            List (batch) of list (docs) of list (subseqs) of text
+        
+        This method is responsible for standardizing inputs to the above format
+        """
+        return [[[x] for x in X] for X in Xs]
+
     def _text_to_ids(self, *Xs, Y=None, max_length=None):
         # Maps lists of text to formatted numpy arrays of token ids and loss-masks marking the lengths of the sequences.
         max_length = max_length or self.config.max_length
+        Xs = self._format_for_encoding(*Xs)
         encoder_out = self.encoder.encode_multi_input(*Xs, Y=None, max_length=max_length)
         return self._array_format(encoder_out)
 
